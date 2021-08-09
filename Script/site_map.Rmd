@@ -1,0 +1,374 @@
+---
+title: "site_map"
+author: "Amieroh Abrahams"
+date: "01 August 2019"
+output: html_document
+---
+
+# Loading Libraries
+
+ 
+```{r prelim_opts, echo=FALSE}
+knitr::opts_chunk$set(
+  comment = "R>",
+  warning = FALSE,
+  message = FALSE 
+)
+
+library(tidyverse)
+# library(plyr)
+library(lubridate)
+library(zoo)
+library(FNN)
+library(data.table)
+library(viridis)
+library(ggrepel)
+library(plyr)
+library(maptools)
+library(sp)
+library(geosphere)
+library(PBSmapping)
+library(scales)
+library(grid)
+library(gridExtra)
+library(circular)
+library(fossil)
+library(mapproj)
+library(reshape2)
+library(stringr)
+library(doMC); doMC::registerDoMC(cores = 4)
+library(fasttime)
+library(xtable)
+library(ggpubr); theme_set(theme_pubr())# library(devtools)
+# install_github("marchtaylor/sinkr")
+
+## Functions
+source("Functions/earthdist.R")
+source("Functions/wind.rose.R")
+source("Functions/theme.R")
+source("Functions/scale.bar.func.R")
+```
+
+```{r}
+load("Data/site_list_sub.Rdata")
+load("Data/africa_coast.RData")
+xtable(site_list_sub, auto = TRUE)
+west <- site_list_sub[-5,]
+west$coast <- "west" # Chnages wc to west
+
+site_list_sub <- site_list_sub[-5,]
+
+
+load("Data/sa_bathy.RData")
+## Downloading the bathy data from NOAA
+# Download mid-res bathymetry data
+# sa_lat <- c(-38, -24.5); sa_lon <- c(11.5, 35.5)
+# sa_bathy <- as.xyz(getNOAA.bathy(lon1 = sa_lon[1], lon2 = sa_lon[2], lat1 = sa_lat[1], lat2 = sa_lat[2], resolution = 4))
+# colnames(sa_bathy) <- c("lon", "lat", "depth")
+# sa_bathy <- sa_bathy[sa_bathy$depth <= 0,]
+# save(sa_bathy, file = "Data_P1/bathy/sa_bathy.RData")
+
+# Loading in the newly downloaded bathymetry data
+load("Data/sa_bathy.RData")
+load("Data/africa_coast.RData")
+
+# This function takes one site (e.g. one set of lon/lats) and calculates a shore normal transect
+shore.normal.transect <- function(site, width = 2){
+  # Find the site on the coastline and it's nearest neighbour points
+  coords <- data.frame(lon = site$lon, lat = site$lat)
+  coords2 <- knnx.index(africa_coast[,1:2], as.matrix(coords), k = 1)
+  coords3 <- data.frame(site = site$site, africa_coast[c(coords2-width, coords2+width),]) 
+  coords3 <- coords3[2:1,1:3]
+  # Define the shore normal transect bearing
+  heading <- earth.bear(coords3[1,2], coords3[1,3], coords3[2,2], coords3[2,3]) + 90
+  if(heading >= 360){
+    heading <- heading-360
+  } else {
+    heading <- heading
+  }
+  heading2 <- data.frame(site = site$site, lon = site$lon, lat = site$lat, heading)
+  return(heading2)
+}
+
+# Creating the transects
+site_transects <- data.frame()
+for(i in 1:length(west$site)){
+ site <- west[i,]
+ site_transect <- shore.normal.transect(site, 2)
+ site_transects <- rbind(site_transects, site_transect)
+}
+
+# Manually correcting Sea Point and Kommetjie
+site_transects$heading[4] <- 290 
+# save(site_transects, file = "Data/site_transects.RData")
+load("Data/site_transects.RData")
+
+# This function takes one site (e.g. one set of lon/lats) and calculates a shore normal transect
+# It then extracts a lat/ lon point every X kilometres until reaching a specified isobath
+
+transect.pixel <- function(site, distances){
+  # Extract coordinates
+  coords <- data.frame(lon = site$lon, lat = site$lat)
+  # Find lon/ lats every X metres 
+  pixels <- data.frame()
+  # deep <- 999
+  # distance_multiplier <- 1
+  # while(deep > isobath){
+  for(i in 1:length(distances)){
+    coords2 <- as.data.frame(destPoint(p = coords, b = site$heading, d = distances[i]))
+    sitesIdx <- knnx.index(sa_bathy[,1:2], as.matrix(coords2), k = 1)
+    bathy2 <- sa_bathy[sitesIdx,]
+    bathy2 <- bathy2[complete.cases(bathy2$depth),]
+    bathy3 <- data.frame(site = site$site, lon = bathy2$lon, lat = bathy2$lat, 
+                         heading = site$heading, 
+                         distance = distances[i])
+    pixels <- rbind(pixels, bathy3)
+    coords <- coords2
+  }
+  if(nrow(pixels) < 1){
+    pixels <- data.frame(site, depth = NA)
+  }else{
+    pixels <- pixels
+  }
+  return(pixels)
+}
+
+# Pixel points
+site_pixels <- data.frame()
+for(i in 1:length(west$site)){
+  site <- site_transects[i,]
+  #site_pixel <- transect.pixel(site, c(10000, 20000, 30000, 40000, 50000)) # RWS: fixed error
+  site_pixel <- transect.pixel(site, c(10000, 25000, 50000))
+  site_pixels <- rbind(site_pixels, site_pixel)
+}
+
+# New site pixels [AA,changesd some time recorded the land temp instad]
+# save(site_pixels, file = "Data/site_pixels_new.RData")
+# load("Data/site_pixels_new.RData")
+# save(site_pixels, file = "Data/site_pixels.RData")
+ load("Data/site_pixels.RData")
+
+# Bounding box
+  # Only one is made in order to know how large the the geom_point() squares should be made to match
+bbox <- data.frame(xmin = destPoint(p = site_pixels[1,2:3], b = 270, d = 12500)[1],
+                   xmax = destPoint(p = site_pixels[1,2:3], b = 90, d = 12500)[1],
+                   ymin = destPoint(p = site_pixels[1,2:3], b = 180, d = 12500)[2],
+                   ymax = destPoint(p = site_pixels[1,2:3], b = 0, d = 12500)[2])
+
+## Determining the temperature at the various distances from the coast
+```
+
+
+```{r , echo= FALSE, message=FALSE, warning=FALSE, fig.cap="Map representing the study region along the South African coastline. The black points represent the location of their *in situ* temperatures and approximations of the pixels used along the shore normal trasect from the satellite sea surface temperatures shown with black boxes", fig.height=6, fig.width=10, fig.pos="H"}
+
+load("Data/south_africa_coast.RData")
+load("Data/africa_coast.RData")
+load("Data/sa_provinces_new.RData")
+load("Data/site_list_sub.Rdata")
+load("Data_coast_angle/site_pixels.RData")
+load("~/Documents/HONOURSPROJECT-master/data/africa_coast.RData")
+#site_pixels <- read_csv("site_pixels.csv")
+
+load("~/Documents/Upwelling_MCS/Data/sa_bathy.RData")
+
+#load("Data/site_pixels.RData")
+#load("MUR.RData")
+names(south_africa_coast)[1] <- "lon"
+
+# Manually divide up coastline
+wc <- south_africa_coast[291:410,]
+
+site_list_sub <- site_list_sub[-5,]
+
+site_list_sub_map <- site_list_sub %>%
+  dplyr::select(site,lat,lon)
+
+# Setting up the theme
+theme_set(theme_bw())
+limits <- c(12,28) # for colour bar
+#breaks <- seq(6, 30, 2) # Create breaks to be used for colour bar
+
+# Define plotting parameters
+sa_lats <- c(-37, -27); sa_lons <- c(14, 25)
+
+site_map <- ggplot(data = south_africa_coast, aes(x = lon, y = lat)) + 
+   geom_polygon(aes(group = group),fill = "grey", colour = "grey", size = 0.1, show.legend = FALSE) +
+  stat_contour(data = sa_bathy, aes(x = lon, y = lat, z = depth), 
+               colour = "black", size = 0.2, binwidth = 200, na.rm = TRUE, show_guide = FALSE)+
+  geom_point(data = site_list_sub, aes(x = lon, y = lat), alpha = 0.8, size = 2) +
+  geom_point(data = site_pixels, aes(x = lon, y = lat, fill = "red"), colour = "red", shape = 15, alpha = 0.8, size = 2.1) +
+  geom_label_repel(data =site_list_sub, aes(x = lon, y = lat, label = site),
+                     size = 4, box.padding = 2, nudge_x = 0.7, nudge_y = 0.2,
+                     segment.alpha = 0.4, force = 0.1, font = "Arial") +
+  xlab("") + ylab("") +
+    # annotate("text", label = "ATLANTIC\nOCEAN", x = 16.5, y = -31.5,
+    #          size =5, angle = 0, colour = "black") +
+  annotate("text", label = "Cape Columbine", x = 16.0, y = -30.5,
+           family = "Arial", size =5, angle = 45, colour = "black")+
+  annotate("text", label = "Cape Peninsula", x = 16.5, y = -33.9,
+             family = "Arial", size =5, angle = 45, colour = "black")+
+  guides(fill = guide_colourbar()) +
+  scale_y_continuous(breaks = seq(-34, -28, by = 2),
+                     labels  = c("34°S","32°S","30°S","28°S")) +
+  scale_x_continuous(breaks = seq(16, 20, by = 2),
+                      labels = c("16°E", "18°E", "20°E")) +
+ coord_fixed(ratio = 1, xlim = c(15.4, 20), ylim = c(-34.4,-27),
+    expand = TRUE) +
+  theme(axis.text = element_text(size = rel(1.2), colour = "black", family = "Arial"),
+        axis.text.x = element_text(vjust = 1, family = "Arial", size = 12),
+        axis.text.y = element_text(hjust = 1, family = "Arial", size = 12),
+        axis.title.x = element_text(vjust = 0, family = "Arial"),
+        axis.title.y = element_text(angle = 90, vjust = 0.3, family = "Arial"),
+        axis.ticks = element_line(colour = "black"),
+        axis.ticks.length = unit(0.4, "cm"),
+        #axis.ticks.length = unit(0.15, "cm"),
+        axis.ticks.margin = unit(0.1, "cm"),
+        panel.background = element_rect(fill = "white", colour = "black", size = 0.5),
+        #panel.border = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=2),
+        #(colour =" black"),
+        panel.grid.major.x = element_blank(),
+        #panel.grid.major.y = element_line(linetype = "dotted", size = 0.2, colour = "black"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        #panel.margin = unit(0.25, "lines"),
+        strip.text = element_text(size = rel(1.0), family = "Palatino"), #Font used to be Palatino but changed to Arial for publication purposes
+        strip.background = element_rect(fill = "white", colour = NA),
+        strip.text.x = element_text(),
+        strip.text.y = element_text(angle = -90),        
+        plot.background = element_rect(colour = "white"),
+        plot.title = element_text(size = rel(1.2), vjust = 1),
+        plot.margin = unit(c(1, 1, 0.5, 0.5), "lines"))
+
+site_map 
+
+africa_map <- ggplot(africa_coast, aes(x = lon, y = lat)) +
+  theme_bw() +
+  coord_equal() +
+  geom_polygon(aes(group = group), colour = "black", fill = "grey80") +
+  geom_rect(data=africa_coast, aes(xmin=15.0, xmax=21.0, ymin=-34.4, ymax=-29.5),  colour = "red", fill = NA, size = 0.35) +
+  geom_polygon(data = sa_provinces_new, (aes(group = group))) +
+  #annotate("text", label = "Africa", x = 16.0, y = 15.0, size = 3) +
+  theme(panel.border = element_rect(colour = "black", size = 0.4),
+        plot.background = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  coord_map(xlim = c(-20, 53), ylim = c(-36, 38), projection = "mercator")
+africa_map
+
+sa_4 <- site_map +
+annotation_custom(grob = ggplotGrob(africa_map),
+xmin = 17, xmax = 21.5,
+ymin = -28.8, ymax = -26.6)
+sa_4
+
+ggsave("Fig1.tiff", units="cm", width=19.05, height=22.23, dpi=600)
+```
+
+# SIte map 2
+
+```{r}
+
+# site_list_sub_map <- site_list_sub %>% 
+#   select(site,lat,lon)
+# 
+# mapping_plot <- function(df, xy = "salmon"){
+#   mapping <- df %>% 
+#     ggplot(aes(x = lon, y = lat)) +
+#     geom_polygon(data = south_africa_coast, aes(group = group), fill = "white") +
+#     coord_cartesian(xlim = c(12, 36), ylim = c(-32, -20)) +
+#     geom_path(data = sa_provinces_new, aes(group = group)) +
+#     geom_point(data = df, colour = xy, size = 4)  +
+#     geom_label_repel(data =df, aes(x = lon, y = lat, label = site),   
+#                      size = 6, box.padding = 2, nudge_x = -0.5, nudge_y = 0.2, 
+#                      segment.alpha = 0.4, force = 0.1) +
+#     coord_equal(xlim = c(15, 35), ylim = c(-37, -27)) +
+#     annotate("text", label = "INDIAN\nOCEAN", x = 35.00, y = -34.0, size = 6.0, angle = 0, colour = "black") +
+#     annotate("text", label = "ATLANTIC\nOCEAN", x = 16.00, y = -37.0, size = 6.0, angle = 0, colour = "black") +
+#     # geom_segment(aes(x = 17.2, y = -32.6, xend = 15.2, yend = -29.5),
+#     #               arrow = arrow(length = unit(0.3, "cm")), size = 0.1, colour = "black") +
+#     #   annotate("text", label = "Benguela", x = 14.0, y = -31.8, size = 3.5, angle = 298, colour = "black") +
+#     #   geom_segment(aes(x = 33, y = -29.5, xend = 29.8, yend = -33.0),
+#     #               arrow = arrow(length = unit(0.3, "cm")), size = 0.1, colour = "black") +
+#     annotate("text", label = "Agulhas", x = 31.7, y = -31.7, size = 7.5, angle = 53, colour = "black") +
+#     scale_x_continuous(labels = scales::unit_format(unit = "°E", sep = "")) +
+#     scale_y_continuous(labels = scales::unit_format(unit = "°S", sep = "")) +
+#     labs(x = NULL, y = NULL) +
+#     coord_cartesian(xlim = c(10.5, 39.5), ylim = c(-39.5, -25.5), expand = F) +
+#     scaleBar(lon = 32.0, lat = -38.7, distanceLon = 200, distanceLat = 50, 
+#              distanceLegend = 90, dist.unit = "km", arrow.length = 100,
+#              arrow.distance = 130, arrow.North.size = 3) +  
+#     coord_equal() +
+#     theme(aspect.ratio = 1)  +
+#     theme_bw() +
+#     theme(panel.border = element_rect(fill = NA, colour = "black", size = 1),
+#           axis.text = element_text(colour = "black", size = 22),
+#           axis.title = element_text(colour = "black", size = 22))
+#   return(mapping)
+# }
+# 
+# Map <- mapping_plot(df = site_list_sub_map, xy = "salmon")
+```
+
+# Bathy plot
+
+```{r}
+fig1_bathy <- ggplot() + theme_bw() + #coord_equal() + 
+  geom_raster(data = sa_bathy, aes(x = lon, y = lat, fill = depth)) +
+  #geom_raster(data = isobath200, aes(x = lon, y = lat, fill = coast)) +
+  stat_contour(data = sa_bathy, aes(x = lon, y = lat, z = depth, alpha = ..level..), 
+               colour = "black", size = 0.2, binwidth = 200, na.rm = TRUE, show_guide = FALSE) +
+  geom_polygon(data = south_africa_coast, aes(x = lon, y = lat, group = group), 
+               size = 0.1, colour = "black", fill = "grey80") +
+  #geom_path(data = sa_provinces_new, aes(x = long, y = lat, group = group)) +
+  # geom_polygon(data = scBox, aes(x = lon, y = lat, group = group), alpha = 0.20, 
+  #              colour = "green", fill = "green") +
+  # geom_polygon(data = wcBox, aes(x = lon, y = lat, group = group), alpha = 0.20, 
+  #              colour = "blue", fill = "blue") +
+  # geom_polygon(data = ecBox, aes(x = lon, y = lat, group = group), alpha = 0.20, 
+  #              colour = "orange", fill = "orange") +
+  geom_point(data = site_pixels, aes(x = lon, y = lat, colour = site), alpha = 0.8, size = 3) +
+  geom_point(data = site_pixels, aes(x = lon, y = lat), colour = "red", shape = 0, alpha = 0.8, size = 2.1) +
+  #geom_rect(data = test, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax), 
+            #alpha = 1, colour = "red", size = 0.1, linetype = 1) +
+   scale_y_continuous(breaks = seq(-34, -30, by = 2),
+                     labels  = c("34°S","32°S","30°S")) +
+  scale_x_continuous(breaks = seq(16, 18, by = 2),
+                      labels = c("16°E", "18°E"))+
+  scale_alpha_continuous(breaks = c(-200, -1000, -2000, -3000, -4000, -5000),
+                         guide_legend(title = "depth (m)")) +
+  scale_fill_gradient(low = "steelblue4", high = "steelblue1", na.value = "steelblue4", 
+                      breaks = c(-1000, -2000, -3000, -4000, -5000),
+                      guide_legend(title = "depth (m)")) +
+  labs(title = NULL, x = NULL, y = NULL) +
+  guides(colour = guide_legend(override.aes = list(size = 3))) +
+  #guide_legend(ncol = 2) +
+  ### Annotate specific things:
+  annotate("text", label = "Cape \n Agulhas", x = 20.0, y = -35.1, size = 2., colour = "white") +
+  #annotate("text", label = "False Bay", x = 18.66, y = -34.55, size = 2.2) +
+  annotate("text", label = "Algoa \n Bay", x = 26.4, y = -34.0, size = 2., colour = "white") +
+  annotate("text", label = "Cape \n Point", x = 18.0, y = -34.4, size = 2, colour = "white") +
+  annotate("text", label = "Hamburg", x = 28.3, y = -33.28611111, size = 2, colour = "white") +
+  theme(#panel.background = element_rect(fill = "steelblue4", colour = NA),
+        #panel.border = element_blank(),
+        #axis.title = element_blank(),
+        #axis.text = element_blank(),
+        #axis.ticks = element_blank(),
+        #panel.grid.minor = element_blank(),
+        #panel.grid.major = element_blank(),
+        #plot.title = element_blank(),
+        #legend.text = element_text(size = 7, colour = "White"),
+        #legend.title = element_text(size = 7, colour = "White"),
+        legend.key = element_rect(colour = NA, size = 0.2),
+        legend.key.height = unit(0.4, "cm"),
+        legend.background = element_blank(),
+        legend.justification = c(1,0), legend.position = c(0.5, 0.4)) +
+  coord_cartesian(xlim = sa_lons, ylim = sa_lats)
+```
+
+
+
+

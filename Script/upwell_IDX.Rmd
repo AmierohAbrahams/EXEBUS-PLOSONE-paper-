@@ -1,0 +1,240 @@
+---
+title: "upwell_IDX"
+author: "Amieroh Abrahams"
+date: "08 August 2019"
+output: html_document
+---
+
+# Upwelling
+
+Upwelling is primarily caused by alongshore, equator ward winds. These winds are caused by cross-shore atmospheric pressure gradients, and these gradients occur predominantly during heating periods. Upwelling is defined as the process whereby cold, nutrient rich, high concentrated CO2, low pH, and low oxygenated waters are pushed to the surface as a result of alongshore winds interacting with the earth’s rotation
+
+# Upwelling indeces
+  # Determining upwelling index from wind data (SAWS)
+  # Index Equation from Fielding & Davis 1989 paper
+
+$$ UpwellingIndex = μ{(Cosθ − 160)}$$
+
+In this equation μ represents the wind speed (m/s) and θ represents the wind direction which is measured in degrees. The 160 degrees is used as this refers to the angle of the coastline for the West Coast of South Africa (Fielding & Davis, 1989). This equation is dependant on wind speed and direction data in order to determining the intensity of the upwelling event. Wind data were obtained daily from the South African Weather Service (SAWS). These wind data were then matched to the date at which temperatures were collected. With these data the upwelling index was determined.
+
+# libraries
+
+```{r}
+# Installing and loading libraries
+## devtools::install_github("robwschlegel/coastR")
+## devtools::install_github("retostauffer/Rfoehnix")
+library(tidyverse)
+library(circular)
+#library(foehnix)
+library(gridExtra)
+library(geosphere)
+library(heatwaveR)
+library(coastR)
+library(openair)
+
+load("Data_coast_angle/site_list_v4.2.RData")
+load("Data_coast_angle/SACTN_daily_v4.2.RData")
+load("Data_coast_angle/data_prod_dates.Rdata")
+
+
+site_list_sub <- site_list %>%
+  filter(coast == "wc") %>%
+  filter(length > 3650) 
+
+site_list_sub <- site_list_sub[c(-2, -3, -5, -6, -7,-9, -12, -13, -14),] # Here I keep all the sites with temperature obtained up to
+# 2017 -kommetjie and Yzerfontein was removed as temperatures started in 1990s. 
+# I took up till 2017 because the SACTN data ends here.. To create a long time series to run through the heatwaveR algorithm, this was needed.
+# save(site_list_sub, file = "Data_coast_angle/site_list_sub.Rdata")
+
+SACTN_US <- SACTN_daily_v4.2 %>%
+  left_join(site_list[,c(4,13)], by = "index") %>%
+  filter(index %in% site_list_sub$index) %>%
+  separate(index, into = c("site", "src"), sep = "/", remove = FALSE) %>%
+  dplyr::rename(insitu_temp = temp)
+```
+
+# Steps
+  - Use the circular function
+  - Determine daily wind data obtained from 3hr intervals
+
+```{r, eval=FALSE}
+wind_1 <- read.delim("Data/Wind_data/wind_data.txt(SAWS)/wind1/wind1.txt", na.strings = "",
+                     col.names = c("station_number", "station_name", "date", "hour", "sub", "speed", "dir"))
+
+wind_2 <- read.delim("Data/Wind_data/wind_data.txt(SAWS)/wind2/wind2.txt", na.strings = "",
+                     col.names = c("station_number", "station_name", "date", "hour", "sub" ,"speed", "dir"))
+
+wind_3 <- read.delim("Data/Wind_data/wind_data.txt(SAWS)/wind3/wind3.txt", na.strings = "",
+                     col.names = c("station_number", "station_name", "date", "hour", "sub" ,"speed", "dir"))
+
+wind_fix <- function(df){
+wind <- df %>%
+  mutate(date = as.Date(as.character(date)),
+         hour = as.numeric(as.character(hour)),
+         dir = as.numeric(as.character(dir)),
+         speed = as.numeric(as.character(speed)),
+         temp_sites = case_when(station_name == "CAPE TOWN TABLE BAY" ~ "Sea Point",
+                                station_name == "CAPE TOWN - ROYAL YACHT CLUB" ~ "Sea Point",
+                                station_name  == "PORT NOLLOTH" ~"Port Nolloth",
+                                station_name  == "CAPE TOWN SLANGKOP" ~ "Hout Bay",
+                                station_name  == "LAMBERTSBAAI NORTIER" ~ "Lamberts Bay",
+                                station_name  == "LANGEBAANWEG AWS" ~ "Saldanha Bay")) %>% 
+  dplyr::select(temp_sites, date, hour, dir, speed) %>% 
+  drop_na()
+}
+
+wind_fix_1 <- wind_fix(df = wind_1)
+wind_fix_2 <- wind_fix(df = wind_2)
+wind_fix_3 <- wind_fix(df = wind_3)
+
+# Combine and save
+wind_data <- rbind(wind_fix_3, wind_fix_2, wind_fix_1)
+#save(wind_data, file = "Data/wind_data.RData")
+# load("Data/wind_data.RData")
+selected_sites <- c("Port Nolloth", "Lamberts Bay", "Sea Point", "Saldanha Bay")
+
+wind_daily_tested <- wind_data %>% 
+  filter(temp_sites %in% selected_sites) 
+# save(wind_daily_tested, file = "Data_coast_angle/wind_daily_tested.RData")
+
+wind_daily <- timeAverage(wind_daily_tested, avg.time = "day", type = "temp_sites", vector.ws = TRUE)
+save(wind_daily, file = "Data_coast_angle/wind_daily.RData")
+```
+
+# Load wind
+
+```{r}
+load("Data_coast_angle/wind_daily.RData") 
+wind_daily <- wind_daily %>%
+  dplyr::rename(sites = temp_sites,
+                mean_speed = speed) %>% 
+  drop_na()
+load("Data/site_list_sub.Rdata")
+load("Data/SACTN_US.RData")
+```
+
+# Upwelling indeces using the above formula
+
+```{r}
+UI_angle <- wind_daily %>% 
+  dplyr::rename(site = sites) %>%  
+  drop_na() %>% 
+  mutate(ui.saws = mean_speed * (cos(deg_rad(dir - 160)))) %>% # This is the orientation of the coastal angle for the west coast
+  dplyr::rename(t = date) %>% # renaming date to t
+  drop_na() %>% 
+  filter(mean_speed >5)
+save(UI_angle, file = "UI_angle.RData")
+# save(UI_angle, file = "Data/UI_angle.RData")
+```
+
+# Exceedence function heatwaveR 
+
+This is done to determine the consecutive number of days at or above what the UI value is meant to be  
+<!-- # Detect consecutive days in exceedance of a given threshold. -->
+
+```{r}
+# Loading the insitu temperature data along the wc
+load("Data/SACTN_US.RData")
+SACTN_upwell <- UI_angle %>% 
+  dplyr::rename(temp = ui.saws) %>%
+  group_by(site) %>%
+  mutate(t = as.Date(t)) %>% 
+  nest() %>% 
+  mutate(clim = purrr::map(data, ts2clm, climatologyPeriod = c("1992-07-10", "2016-12-31")), 
+         exceed = purrr::map(clim, exceedance, minDuration = 1, threshold = 1)) %>%  
+  select(-data, -clim) %>% 
+  unnest(cols = exceed) %>%
+  filter(row_number() %% 2 == 1) %>%
+  unnest(cols = exceed) %>% 
+  dplyr::rename(ui.saws = temp) %>%
+  select(site, t, ui.saws, exceedance) 
+
+# OR
+SACTN_upwell <- UI_angle %>% 
+  mutate(exceedance = ifelse(ui.saws >= 1, TRUE, FALSE),
+         t = as.Date(t))
+
+# Static numbers are often rejected and so we decided to find a percentile value as these are often more likely to be approved
+
+SACTN_upwell_quantiles <- SACTN_upwell %>% 
+  filter(ui.saws >= 0) %>% # Upwelling occurs for all values above 0. Values below this is regarded as downwelling
+  group_by(site) %>% 
+  summarize(quant_10 = quantile(ui.saws, probs = 0.10, na.rm = TRUE),
+            quant_25 = quantile(ui.saws, probs = 0.25, na.rm = TRUE),
+            quant_50 = quantile(ui.saws, probs = 0.50, na.rm = TRUE),
+            quant_75 = quantile(ui.saws, probs = 0.75, na.rm = TRUE),
+            quant_90 = quantile(ui.saws, probs = 0.90, na.rm = TRUE)) %>% 
+  mutate_if(is.numeric, round, digits = 2)
+
+# Detect event: 
+detect_event_custom <- function(df){
+  res <- detect_event(df, threshClim2 = df$exceedance, minDuration = 1, coldSpells = T)
+  return(res)
+}
+# Calculate the upwelling event metrics
+SACTN_US <- SACTN_US %>% 
+  filter(year(date) %in% seq(2011, 2016, 1))
+
+SACTN_upwell_base <- SACTN_US %>% 
+  dplyr::rename(t = date) %>% 
+  group_by(site) %>% 
+  nest() %>% 
+  mutate(clim = purrr::map(data, ts2clm, pctile = 100, climatologyPeriod = c("2011-01-01", "2016-12-31"))) %>%
+  dplyr::select(-data) %>% 
+  unnest(cols = clim) %>%
+  left_join(SACTN_upwell, by = c("site", "t")) %>%
+  filter(!is.na(exceedance)) %>%
+  group_by(site) %>% 
+  nest() %>% 
+  dplyr::mutate(exceed = purrr::map(data, detect_event_custom)) %>% 
+  dplyr::select(-data)
+
+SACTN_upwell_events <- SACTN_upwell_base %>% 
+  unnest() %>%
+  filter(row_number() %% 2 == 0) %>%
+  unnest()
+
+number_SACTN <-  SACTN_upwell_events%>% 
+  filter(site == "Saldanha Bay")
+
+save(SACTN_upwell_events, file = "SACTN_upwell_events.RData")
+# save(SACTN_upwell_events, file = "Data_coast_angle/SACTN_upwell_events.RData")
+
+SACTN_upwell_clims <- SACTN_upwell_base %>% 
+  unnest() %>%
+  filter(row_number() %% 2 == 1) %>% 
+  unnest()
+# save(SACTN_upwell_clims, file = "Data/SACTN_upwell_clims.RData")
+```
+
+# MCS and upwelling indeces plot
+
+```{r}
+SP_upwelling <- SACTN_upwell_clims %>% 
+  filter(site == "Sea Point", lubridate::year(t) %in% 2016:2018)
+plot1 <- ggplot(SP_upwelling, aes(x = t, y = temp)) +
+  geom_flame(aes(y = thresh, y2 = temp), fill = "navy", n = 3) +
+  geom_point(data = filter(SP_upwelling, !is.na(event_no))) +
+  geom_line(aes(y = thresh)) +
+  geom_line(alpha = 0.7) +
+  geom_rug(data = filter(SP_upwelling, event_no > 0), sides = "b")
+plot1
+  
+# Linear Models
+lm_coeff <- function(df){
+  res <- lm(formula = val ~ date_peak, data = df)
+  res_coeff <- round(as.numeric(res$coefficient[2]), 4)
+}
+# Changes in upwelling metrics
+SACTN_upwell_lm <- SACTN_upwell_events %>% 
+  select(-c(index_start:index_end)) %>% 
+  gather(key = "var", value = "val", -c(site:date_end)) %>% 
+  group_by(site, var) %>% 
+  nest() %>% 
+  mutate(slope = purrr::map(data, lm_coeff)) %>% 
+  select(-data) %>% 
+  unnest() %>% 
+  # convert from daily to decadal values
+  mutate(slope = slope * 365.25*10)
+```
+

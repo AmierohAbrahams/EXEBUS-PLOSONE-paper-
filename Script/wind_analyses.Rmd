@@ -1,0 +1,462 @@
+---
+title: "wind_diagrams"
+author: "Amieroh Abrahams"
+date: "01 August 2019"
+output: html_document
+---
+
+loading libraries
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(zoo)
+library(lubridate)
+library(ggrepel)
+library(FNN)
+library(stringr)
+library(circular)
+library(broom)
+library(ggrepel)
+library(purrr)
+library(stlplus)
+library(gridExtra)
+```
+
+
+Loading the Wind data. The wind dataset was supplied by the SAWS in .text format. Wind data was provided for the sites closes to the requested site as wind data may not be available for the 6 study sites in this research.  The wind direction was collected every 2 hours and by using the circular function we calcuated the daily wind direction and mean speed. There is a numerically large gap between 360 and 2 where as in degrees its not as large. The circular mean function returns the mean direction of a vector of circular data. https://cran.r-project.org/web/packages/circular/circular.pdf (Pg 130). The circular function creates circular objects around the wind direction. 
+
+```{r}
+wind_1 <- read.delim("Data/Wind_data/wind_data.txt(SAWS)/wind1/wind1.txt", na.strings = "", 
+                     col.names = c("station_number", "station_name", "date", "hour", "sub", "speed", "dir"))
+
+wind_2 <- read.delim("Data/Wind_data/wind_data.txt(SAWS)/wind2/wind2.txt", na.strings = "",
+                     col.names = c("station_number", "station_name", "date", "hour", "sub" ,"speed", "dir"))
+
+wind_3 <- read.delim("Data/Wind_data/wind_data.txt(SAWS)/wind3/wind3.txt", na.strings = "",
+                     col.names = c("station_number", "station_name", "date", "hour", "sub" ,"speed", "dir"))
+
+# Slecting the important columns for each of the datasets
+wind_fix <- function(df){
+wind <- df %>% 
+  select(station_name, date, hour, dir, speed) %>%  #column names
+  mutate(date = as.Date(as.character(date)),
+         hour = as.numeric(as.character(hour)), 
+         dir = as.numeric(as.character(dir)),
+         speed = as.numeric(as.character(speed)))
+}
+# RWS: We can see when we force the values to be numeric that there are some non-numeric values in the base data
+wind_1 <- wind_fix(df = wind_1)
+wind_2 <- wind_fix(df = wind_2)
+wind_3 <- wind_fix(df = wind_3)
+
+## Renaming the sites within the wind datasets to match the name of the sites at which seawater temperature was collected
+## The wind data was obtained from the SAWS and the wind stations used were the closes stations to which temperature was collected
+
+renaming_sites_1 <- function(df) {
+  sites <- df %>%
+      # RWS: An alternative way to replace values without having to use multiple ifelse() statements
+      mutate(temp_sites = case_when(station_name == "CAPE TOWN TABLE BAY" ~ "Sea Point",
+                                    station_name == "CAPE TOWN - ROYAL YACHT CLUB" ~ "Sea Point",
+                                    station_name  == "PORT NOLLOTH" ~"Port Nolloth",
+                                    station_name  == "CAPE TOWN SLANGKOP" ~ "Hout Bay",
+                                    station_name  == "LAMBERTSBAAI NORTIER" ~ "Lamberts Bay",
+                                    station_name  == "LANGEBAANWEG AWS" ~ "Saldanha Bay"))
+  return(sites)
+}
+
+
+wind_sitesmatched_1 <-  renaming_sites_1(df = wind_1)
+wind_sitesmatched_2 <-  renaming_sites_1(df = wind_2)
+wind_sitesmatched_3 <-  renaming_sites_1(df = wind_3)
+wind_data <- rbind(wind_sitesmatched_3,wind_sitesmatched_2,wind_sitesmatched_1)
+save(wind_data, file = "Data/wind_data.RData")
+
+# # RWS: You should never be removing values by specific call like this
+#   # Rather you should be able to use some sort of conditional to screen out unwanted values
+# wind_sitesmatched_1 <- wind_sitesmatched_1[-c(121352, 121353, 379892, 379893, 609324, 609325, 843506, 843507, 1014585), ]
+# renaming_sites_2 <- function(df) {
+#   sites <- df %>%
+#     mutate(temp_sites = ifelse(station_name %in% c("ROBBENEILAND"), "Koeberg Basin",        
+#                            ifelse(station_name %in% c("GEELBEK"), "Yzerfontein",
+#                                 ifelse(station_name %in% c("DASSEN ISLAND"), "Dassen Island",
+#                                        ifelse(station_name %in% c("ATLANTIS"), "Koeberg Basin","Error")))))
+#   return(sites)
+# }
+# 
+# wind_sitesmatched_2 <-  renaming_sites_2(df = wind_2)
+# wind_sitesmatched_2 <- wind_sitesmatched_2[-c(228372, 228373, 313441, 313442, 364881, 364882, 557392), ] 
+# renaming_sites_3 <- function(df) {
+#   sites <- df %>%
+#     mutate(temp_sites = ifelse(station_name %in% c("CAPE TOWN SLANGKOP"), "Kommetjie",  
+#                            ifelse(station_name %in% c("CAPE TOWN - ROYAL YACHT CLUB"), "Sea Point",
+#                            ifelse(station_name %in% c("CAPE TOWN TABLE BAY"), "Sea Point","Error"))))
+#   return(sites)
+# }
+# 
+# wind_sitesmatched_3 <-  renaming_sites_3(df = wind_3)
+# wind_sitesmatched_3 <- wind_sitesmatched_3[-c(119317, 119318, 196551, 196552, 346759), ] 
+### CAPE TOWN SLANGKOP may be used for Kommetjie and for Houtbay
+# wind_3_HoutBay <- wind_3 %>% 
+#   filter(station_name == "CAPE TOWN SLANGKOP") %>% 
+#   mutate(temp_sites = ifelse(station_name %in% c("CAPE TOWN SLANGKOP"), "Hout Bay","Error"))
+# wind_data <- rbind(wind_3_HoutBay,wind_sitesmatched_3,wind_sitesmatched_2,wind_sitesmatched_1)
+# wind_data <- wind_data %>% 
+#   na.omit()
+# 
+# wind_data <- wind_data %>% 
+#   # mutate(date = as.Date(date)) %>%  
+#   group_by(date, hour, temp_sites) 
+# 
+# # write.csv(wind_data, file = "Data_P1/wind_data.csv", row.names = T)
+# # save(wind_data, file = "Data_P1/wind_data.RData")
+
+# load("Data_P1/insitu_wind.RData")
+# Loading the wind data
+library(tidyverse)
+library(circular)
+
+# wind_data <- read_csv("wind_data.csv", col_types = cols(X1 = col_number(), date = col_character(), dir = col_number(), hour = col_number(),  speed = col_number())) # Dataset too large for Github but better data at line 638
+
+# wind_data <- read_csv("Data_P1/wind_data.csv")
+selected_sites <- c("Port Nolloth", "Lamberts Bay", "Sea Point", "Saldanha Bay", "Hout Bay") 
+
+wind_daily <- wind_data %>%
+  # ungroup() %>%
+  # mutate(date = as.Date(date))%>%
+  dplyr::group_by(temp_sites, date) %>%
+  filter(temp_sites %in% selected_sites) %>% 
+  dplyr::summarise(dir_circ = round(mean.circular(circular(dir, units = "degrees")),2),
+                   mean_speed = round(mean(speed),2)) 
+
+
+# save(wind_daily, file = "Data/wind_daily.RData")
+# # Loading in the daily wind data
+
+# Loading the subsetted wind data created from the text files above 
+load("Data/wind_daily.RData") 
+```
+
+# Matching
+  Matching the wind data with the temperature data using the match function
+  
+```{r}
+match_func <- function(df){
+  match <- SACTN_US  %>%  
+  left_join(df, by = c("site", "date")) %>% 
+  na.trim()
+  return(match)
+}
+
+wind_daily <- wind_daily %>% 
+  dplyr::rename(site = temp_sites)
+
+wind_match <- match_func(df = wind_daily) 
+# save(wind_match, file = "Data/wind_match.RData")
+
+library(openair)
+print(
+with(wind_match,
+     windRose(data_frame(ws=mean_speed, wd=dir_circ, 
+                         date=date, station=factor(site)),
+
+              paddle=FALSE, type="station", width=2))
+)
+# png("Figures/wind.png", width = 8, height = 5, pointsize = 6)
+?windRose
+# ?plot
+```
+Matching the OISST Data and CMC data to match the SACTN dataset
+
+```{r}
+unique_pixel <- BC2015_2016 %>%
+  select(lon, lat) %>%
+  unique()
+
+# # Select 1 nearest pixel (k = 1)
+# # here we ue knnx to find the closes pixel to the insitu sites
+match_index <- knnx.index(data = as.matrix(unique_pixel[,1:2]),
+                          query = as.matrix(site_list_sub[,5:6]), k = 1)
+
+# # Select SST pixels nearest to insitu sites
+pixel_match <- unique_pixel[match_index,] %>%
+  unite(col = combi, lon, lat, sep = "/", remove = F) %>% 
+  mutate(site = site_list_sub$site)
+
+combined_OISST_match <- BC2015_2016 %>%
+  unite(col = combi, lon, lat, sep = "/", remove = F) %>%
+  filter(combi %in% pixel_match$combi)
+rm(combined_OISST)
+
+combined_OISST_sites <- combined_OISST_match %>%
+  left_join(pixel_match, by = c("combi", "lon", "lat"))
+
+OISST_final <- combined_OISST_sites %>% 
+  select(site, date, temp, lat, lon)
+
+OISST_final2015_2016 <- combined_OISST_sites %>% 
+  select(site, date, temp, lat, lon)
+############
+unique_pixel <- CMC_2015_2016 %>%
+  select(lon, lat) %>%
+  unique()
+
+# # Select 1 nearest pixel (k = 1)
+# # here we ue knnx to find the closes pixel to the insitu sites
+match_index <- knnx.index(data = as.matrix(unique_pixel[,1:2]),
+                          query = as.matrix(site_list_sub[,5:6]), k = 1)
+
+# # Select SST pixels nearest to insitu sites
+pixel_match <- unique_pixel[match_index,] %>%
+  unite(col = combi, lon, lat, sep = "/", remove = F) %>% 
+  mutate(site = site_list_sub$site)
+
+combined_CMC_match <- CMC_2015_2016 %>%
+  unite(col = combi, lon, lat, sep = "/", remove = F) %>%
+  filter(combi %in% pixel_match$combi)
+# rm(combined_OISST)
+
+combined_CMC_sites <- combined_CMC_match %>%
+  left_join(pixel_match, by = c("combi", "lon", "lat"))
+
+CMC_final <- combined_CMC_sites %>% 
+  select(site, date, temp, lat, lon) 
+```
+
+
+```{r}
+match_funcs <- function(df){
+  unique_pixel <- df %>%
+    select(lon, lat) %>%
+    unique()
+}
+
+match_OISST <- match_funcs(df = OISST)
+match_CMC <- match_funcs(df = CMC)
+
+# # Select 1 nearest pixel (k = 1)
+# # here we ue knnx to find the closes pixel to the insitu sites
+match_index_func <- function(df){
+  match_index <- knnx.index(data = as.matrix(df[,1:2]),
+                            query = as.matrix(site_list_sub[,5:6]), k = 1)
+}
+
+match_index_OISST <- match_funcs(df = match_OISST)
+match_index_CMC <- match_funcs(df = match_CMC)
+
+# # Select SST pixels nearest to insitu sites
+
+pixel_match_OISST <- match_OISST[match_index_OISST,] %>%
+  unite(col = combi, lon, lat, sep = "/", remove = F) %>% 
+  mutate(site = site_list_sub$site)
+
+
+pixel_match_CMC <- match_OISST[match_index_CMC,] %>%
+  unite(col = combi, lon, lat, sep = "/", remove = F) %>% 
+  mutate(site = site_list_sub$site)
+
+combined_OISST_match <- OISST %>%
+  unite(col = combi, lon, lat, sep = "/", remove = F) %>%
+  filter(combi %in% pixel_match$combi)
+rm(combined_OISST)
+
+
+combined_OISST_sites <- combined_OISST_match %>%
+  left_join(pixel_match, by = c("combi", "lon", "lat"))
+
+```
+
+## Wind rose plots
+
+```{r}
+# Loading in the matched wind data
+load("Data/wind_match.RData")
+
+wind_match <- wind_match %>% 
+  drop_na()
+
+wave_daily_renamed <- wind_match %>% 
+  dplyr::rename(spd = mean_speed) %>%
+  dplyr::rename(dir = dir_circ) 
+source("Functions/wind.rose.R")
+p.wr2 <- plot.windrose(data = wave_daily_renamed,
+              spd = "spd",
+              dir = "dir")
+p.wr3 <- p.wr2 + facet_wrap(.~ site, ncol = 2, nrow = "") +
+  theme(strip.text.x = element_text(size = 25))
+p.wr3  # Change colours and remove the NA values
+```
+
+## Seasonal wind patterns
+
+```{r}
+wind_months <- wind_daily %>% 
+  mutate(month = month(date, abbr = T, label = T),
+         year = year(date)) %>% 
+    mutate(season = ifelse(month %in% c("Jan", "Feb", "Mar"), "Summer",        
+                           ifelse(month %in% c("Apr", "May", "Jun"), "Autumn",
+                                ifelse(month %in% c("Jul", "Aug", "Sep"), "Winter",
+                                       ifelse(month %in% c("Oct", "Nov", "Dec"), "Spring","Error")))))
+
+# save(wind_months, file = "Data/wind_m onths.RData")
+```
+
+# Question:
+  # Are there more SE winds in summer but comes later in January? i.e any changes in SE wind and changes in water temperature
+
+```{r}
+load("Data/SACTN_US.RData")
+load("Data/wind_months.RData")
+
+wind_months <- wind_months %>% 
+  dplyr::rename(site = temp_sites)
+
+
+
+match_func <- function(df){
+  match <- df  %>%  
+  left_join(wind_months, by = c("site", "date")) %>% 
+  na.trim()
+  return(match)
+}
+# wind_months <- site_list_sub %>% 
+#   left_join(wind_months)
+
+wind_match_SACTN <- match_func(df = SACTN_US)
+wind_match_OISST <- match_func(df = OISST_final)
+wind_match_CMC <- match_func(df = CMC_final)
+```
+
+# Visualisation - This does not show the changes per year but for all  also does not show any temps
+
+```{r}
+source("Functions/wind.rose.R")
+
+wind_renamed_func <- function(df){
+  wind_renamed <- df %>% 
+    mutate(dir_circ = ifelse(dir_circ < 0, dir_circ+360, dir_circ)) %>%
+    dplyr::rename(spd = mean_speed) %>%
+    dplyr::rename(dir = dir_circ) %>% 
+    filter(spd > 0)
+}
+
+wind_renamed_SACTN <- wind_renamed_func(df = wind_match_SACTN)
+wind_renmed_OISST <- wind_renamed_func(df = wind_match_OISST)
+wind_renamed_CMC <- wind_renamed_func(df = wind_match_CMC)
+
+p.wr2 <- plot.windrose(data = wind_renamed,
+              spd = "spd",
+              dir = "dir")
+p.wr3 <- p.wr2 + facet_wrap(.~ site) +
+  theme(strip.text.x = element_text(size = 25)) + theme(panel.spacing = unit(2, "lines"))
+p.wr3
+```
+
+```{r}
+# First filter out only the SE data
+SE_renamed <-wind_renamed_SACTN %>% # Chnaged the names with the data 
+  filter(dir >= 180, dir <= 270)
+# Then create diifferent temporal results
+SE_annual <- SE_renamed %>% 
+  group_by(site, year) %>% 
+  summarise(count = n(),
+            mean_dir = mean(dir, na.rm = T),
+            mean_temp = mean(temp, na.rm = T))
+SE_summer <- SE_renamed %>% 
+  filter(season == "Summer") %>% 
+  group_by(site, year, season) %>% 
+  summarise(count = n(),
+            mean_dir = mean(dir, na.rm = T),
+            mean_temp = mean(temp, na.rm = T))
+SE_monthly <- SE_renamed %>% 
+  filter(season == "Summer") %>% 
+  group_by(site, year, season, month) %>% 
+  summarise(count = n(),
+            mean_dir = mean(dir, na.rm = T),
+            mean_temp = mean(temp, na.rm = T))
+# Plots
+## Annual count of SE wind
+ggplot(data = SE_annual, aes(x = year, y = count)) +
+  geom_line() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~site)
+## Annual count of SE wind in Summer
+### The trends between annual and summer SE wind counts are remarkably similar
+ggplot(data = SE_summer, aes(x = year, y = count)) +
+  geom_line() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~site)
+## Summer month count of SE winds
+ggplot(data = SE_monthly, aes(x = year, y = count)) +
+  geom_line(aes(colour = month)) +
+  geom_smooth(aes(colour = month), method = "lm") +
+  facet_wrap(~site)
+# March SE winds have been increasing in count in Hout Bay, Lamberts Bay, and Sea Point
+# Feb winds are increasing faster in count in Saldanha Bay
+# All SE summer winds are decreasing in Port Nolloth
+```
+
+
+```{r}
+## Annual mean SST
+ggplot(data = SE_annual, aes(x = year, y = mean_temp)) +
+  geom_line() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~site)
+## Annual Summer mean SST
+ggplot(data = SE_summer, aes(x = year, y = mean_temp)) +
+  geom_line() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~site)
+# The temperature trends for annual and summer means are very similar
+# THe annual mean increase at Port Nolloth is steeper than the Summer increase
+## Summer months mean SST
+ggplot(data = SE_monthly, aes(x = year, y = mean_temp)) +
+  geom_line(aes(colour = month)) +
+  geom_smooth(aes(colour = month), method = "lm") +
+  facet_wrap(~site)
+# The trends in increasing temperatures for each month are similar at Lamberts Bay and Port Nolloth
+# The incrase in March temperatures is greater than the other months at Hout Bay
+# The decrease in temperatures per month at Saldanha Bay are similar per month
+# Sea Point shows a more intersting pattern with January temperatures decreasing, Feb nearly flat, and Mar increasing
+```
+
+```{r}
+# Now having had a look at the data it appears there may be some relationships between SE wind and temperature
+# at Sea Point, and perhaps a negative relationship atPort Nolloth
+# This outputs the slope of the relationship and the correlation between
+# annual count of SE winds mean temperature 
+slope_calc <- function(df){
+  df %>% 
+    mutate(row_num = 1:n()) %>% 
+    do(mod1 = lm(count ~ row_num, data = .),
+       mod2 = lm(mean_temp ~ row_num, data = .),
+       mod3 = lm(mean_temp ~ count, data = .),
+       mod4 = cor(.$mean_temp, .$count, method = "pearson", use = "complete.obs")[1]) %>% 
+    mutate(wind_slope = summary(mod1)$coeff[2],
+           temp_slope = summary(mod2)$coeff[2],
+           temp_wind_slope = summary(mod3)$coeff[2],
+           temp_wind_r = mod4[1],
+           temp_wind_r2 = glance(mod3)$adj.r.squared) %>%
+    select(-mod1, -mod2, -mod3, -mod4) %>% 
+    mutate_if(is.numeric, round, 2)
+}
+# glance(lm(mean_temp ~ count, data = SE_annual))
+SE_annual %>% 
+  group_by(site) %>% 
+  slope_calc()
+# Summer stats
+SE_summer %>% 
+  group_by(site, season) %>% 
+  slope_calc()
+# Monthly summer stats
+SE_monthly %>% 
+  group_by(site, season, month) %>% 
+  slope_calc()
+# There's a little something at Hout Bay, not much otherwise
+```
+
+# Data inspection
+    # Find overlapping time series for each of the data and then run analyses
+    # Length of OISST much longer than CMC etc.
+    # Allows for good comparison
